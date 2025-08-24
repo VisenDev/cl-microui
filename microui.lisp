@@ -1,8 +1,19 @@
 
+(define-condition todo (error)
+  ((msg :initarg :msg :type string :reader todo-msg))
+  (:report (lambda (condition stream)
+             (format stream "TODO: ~a" (todo-msg condition))
+             )
+   )
+  )
+(defun todo (msg)
+  (signal 'todo :msg msg)
+  )
+
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (defun symbol-concat (&rest symbols)
-    (intern (format nil "~{~a~}" symbols))
-    ))
+(defun symbol-concat (&rest symbols)
+  (intern (format nil "~{~a~}" symbols))
+  ))
 
 (defmacro defenum (name fields)
   (assert (not (find 'count fields)) (name) "Cannot use count as an enum field name in enum ~a" name)
@@ -19,34 +30,34 @@
          )
     )
   )
-
-(defenum clip (part all))
-(defenum command (jump clip rect text icon max))
-(defenum color-id (
-   text
-   border
-   windowbg
-   titlebg
-   titletext
-   panelbg
-   button
-   buttonhover
-   buttonfocus
-   base
-   basehover
-   basefocus
-   scrollbase
-   scrollthumb
-   max
-   ))
-(defenum icon (
-   close
-   check
-   collapsed
-   expanded
-   max
-   ))
-
+(deftype clip () '(member part all))
+(deftype command () '(member jump clip rect text icon max))
+(deftype u8 () '(integer 0 255))
+(defstruct
+    (color
+     (:constructor create-color (r g b &optional a)))
+  (r 0 :type u8)
+  (b 0 :type u8)
+  (g 0 :type u8)
+  (a 255 :type u8)  
+  )
+(defstruct color-theme
+  (text (create-color 230 230 230) :type color)
+  (border (create-color 25 25 25) :type color)
+  (window-bg (create-color 50 50 50) :type color)
+  (title-bg (create-color 25 25 25) :type color)
+  (title-text (create-color 240 240 240) :type color)
+  (panel-bg (create-color 0 0 0 0) :type color)
+  (button (create-color 75 75 75) :type color)
+  (button-hover (create-color 95 95 95) :type color)
+  (button-focus (create-color 115 115 115) :type color)
+  (base (create-color 30 30 30) :type color)
+  (base-hover (create-color 35 35 35) :type color)
+  (base-focus (create-color 40 40 40) :type color)
+  (scroll-base (create-color 43 43 43) :type color)
+  (scroll-thumb (create-color 30 30 30) :type color)
+  )
+(deftype icon () '(member close check collapsed expanded))
 (deftype id () 'fixnum)
 (defstruct vec2
   (x 0 :type fixnum)
@@ -140,23 +151,52 @@
   (title-height no-default :type fixnum)
   (scrollbar-size no-default :type fixnum)
   (thumb-size no-default :type fixnum)
-  (colors no-default :type (array color))
+  (colors no-default :type color-theme)
   )
+
+
+(declaim (ftype (function (context rect symbol) nil) draw-frame))
+(defun draw-frame (ctx rect color-id)
+  (let*
+      ((style (context-style ctx))
+       (colors (style-colors style))
+       (color (funcall (symbol-function color-id) colors))
+       )
+  (draw-rect ctx rect color)
+    (when
+        (member
+         color-id
+         '(color-theme-scroll-base
+           color-theme-scroll-thumb
+           color-theme-title-bg)
+         )
+      (return-from draw-frame)
+      )
+    (let* ((border (color-theme-border colors))
+          (a (color-a border))
+          )
+      (unless (= 0 a)
+        (draw-box ctx (expand-rect rect 1) border)
+        )
+      )
+    )
+  )
+
 (defstruct context
   (text-width no-default
    :type (function (font string fixnum) fixnum))
   (text-height no-default
    :type (function (font) fixnum))
-  (draw-frame no-default
-   :type (function (context rect color-id) nil))
-  (style no-default :type style)
-  (hover no-default :type id)
-  (focus no-default :type id)
-  (last-id no-default :type id)
-  (last-rect no-default :type rect)
-  (last-zindex no-default :type fixnum)
-  (updated-focus no-default :type fixnum)
-  (frame no-default :type fixnum)
+  (draw-frame #'draw-frame
+   :type (function (context rect symbol) nil))
+  (style (make-style) :type style)
+  (hover 0 :type id)
+  (focus 0 :type id)
+  (last-id 0 :type id)
+  (last-rect 0 :type rect)
+  (last-zindex 0 :type fixnum)
+  (updated-focus 0 :type fixnum)
+  (frame 0 :type fixnum)
   (hover-root)
   (next-hover-root)
   (scroll-target)
@@ -200,3 +240,82 @@
 
 (defparameter +unclipped-rect+
   (make-rect :x 0 :y 0 :w #x1000000 :h #x1000000))
+
+(defparameter +default-style+
+  (make-style
+   :font nil
+   :size (make-vec2 :x 68 :y 10)
+   :padding 5
+   :spacing 4
+   :indent 24
+   :title-height 24
+   :scrollbar-size 12
+   :thumb-size 8
+   :colors (make-color-theme)
+   ))
+
+(declaim (ftype (function (rect fixnum) rect) expand-rect))
+(defun expand-rect (r n)
+  (make-rect :x (- (rect-x r) n)
+             :y (- (rect-y r) n)
+             :w (+ (rect-w r) (* n 2))
+             :h (+ (rect-h r) (* n 2))
+             )
+  )
+(declaim (ftype (function (rect rect) rect) intersect-rects))
+(defun intersect-rects (r1 r2)
+  (let*
+      ((x1 (max (rect-x r1) (rect-x r2)))
+       (y1 (max (rect-y r1) (rect-y r2)))
+       (x2 (min (+ (rect-x r1) (rect-w r1))
+                (+ (rect-x r2) (rect-w r2))
+                )
+           )
+       (y2 (min (+ (rect-y r1) (rect-h r1))
+                (+ (rect-y r2) (rect-h r2))
+                )
+           )
+       )
+    (when (< x2 x1)
+      (setf x2 x1)
+      )
+    (when (< y2 y1)
+      (setf y2 y1)
+      )
+    (make-rect :x x1 :y y1 :w (- x2 x1) :h (- y2 y1))
+    )
+  )
+
+(declaim (ftype (function (rect vec2) boolean) rect-overlaps-vec2))
+(defun rect-overlaps-vec2 (rect vec2)
+  (let* ((rx (rect-x rect))
+         (ry (rect-y rect))
+         (rw (rect-w rect))
+         (rh (rect-h rect))
+         (vx (vec2-x vec2))
+         (vy (vec2-y vec2))
+         )
+    (and
+     (>= vx rx)
+     (< vx (+ rx rw))
+     (>= vy ry)
+     (< vy (+ ry rh))
+     )
+    )
+  )
+
+(declaim (ftype (function (context) nil) begin))
+(defun begin (ctx)
+  (expect (context-text-width ctx))
+  (expect (context-text-height ctx))
+  ;ctx->command_list.idx = 0;
+  ;ctx->root_list.idx = 0;
+  ;ctx->scroll_target = NULL;
+  ;ctx->hover_root = ctx->next_hover_root;
+  ;ctx->next_hover_root = NULL;
+  ;ctx->mouse_delta.x = ctx->mouse_pos.x - ctx->last_mouse_pos.x;
+  ;ctx->mouse_delta.y = ctx->mouse_pos.y - ctx->last_mouse_pos.y;
+                                        ;ctx->frame++;
+  (todo "finish this function")
+  )
+
