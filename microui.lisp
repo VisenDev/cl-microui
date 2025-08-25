@@ -430,7 +430,32 @@
 ;  while (size--) {
 ;    *hash = (*hash ^ *p++) * 16777619;
 ;  }
-;}
+
+                                        ;}
+(declaim (ftype (function (id t) id) hash))
+(defun hash (hash-seed-id data)
+
+  )
+
+(declaim (ftype (function (array) boolean) stack-emptyp))
+(defun stack-emptyp (stk)
+  (= 0 (fill-pointer stk))
+  )
+
+(defun id-stack-top (ctx)
+  (let* ((stk (ctx-id-stack ctx))
+         )
+
+    (if (stack-emptyp stk)
+        +hash-initial+
+        (vector-top
+
+
+(defun get-id (ctx obj)
+  (let*
+      ((idx (fill-pointer (ctx-id-stack ctx)))
+       (res (i
+  
 
 ; TODO implement this
 ;mu_Id mu_get_id(mu_Context *ctx, const void *data, int size) {
