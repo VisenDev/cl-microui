@@ -155,10 +155,10 @@
   )
 
 
-(declaim (ftype (function (context rect symbol) nil) draw-frame))
+(declaim (ftype (function (ctx rect symbol) nil) draw-frame))
 (defun draw-frame (ctx rect color-id)
   (let*
-      ((style (context-style ctx))
+      ((style (ctx-style ctx))
        (colors (style-colors style))
        (color (funcall (symbol-function color-id) colors))
        )
@@ -182,13 +182,18 @@
     )
   )
 
-(defstruct context
+(defconstant +default-stack-size+ 64)
+(defun make-stack ()
+  (make-array +default-stack-size+ :fill-pointer 0)
+  )
+
+(defstruct ctx
   (text-width no-default
    :type (function (font string fixnum) fixnum))
   (text-height no-default
    :type (function (font) fixnum))
   (draw-frame #'draw-frame
-   :type (function (context rect symbol) nil))
+   :type (function (ctx rect symbol) nil))
   (style (make-style) :type style)
   (hover 0 :type id)
   (focus 0 :type id)
@@ -204,12 +209,12 @@
   (number-edit)
 
                                         ;stacks
-  (command-list)
-  (root-list)
-  (container-stack)
-  (clip-stack)
-  (id-stack)
-  (layout-stack)
+  (command-list (make-stack))
+  (root-list (make-stack))
+  (container-stack (make-stack))
+  (clip-stack (make-stack))
+  (id-stack (make-stack))
+  (layout-stack (make-stack))
 
                                         ;state pools
   (container-pool)
@@ -219,7 +224,7 @@
                                         ;input state
   (mouse-pos (make-vec2) :type vec2)
   (last-mouse-pos (make-vec2) :type vec2)
-  (mouse-default (make-vec2) :type vec2)
+  (mouse-delta (make-vec2) :type vec2)
   (scroll-delta (make-vec2) :type vec2)
   (mouse-down)
   (mouse-pressed)
@@ -304,18 +309,144 @@
     )
   )
 
-(declaim (ftype (function (context) nil) begin))
-(defun begin (ctx)
-  (expect (context-text-width ctx))
-  (expect (context-text-height ctx))
-  ;ctx->command_list.idx = 0;
-  ;ctx->root_list.idx = 0;
-  ;ctx->scroll_target = NULL;
-  ;ctx->hover_root = ctx->next_hover_root;
-  ;ctx->next_hover_root = NULL;
-  ;ctx->mouse_delta.x = ctx->mouse_pos.x - ctx->last_mouse_pos.x;
-  ;ctx->mouse_delta.y = ctx->mouse_pos.y - ctx->last_mouse_pos.y;
-                                        ;ctx->frame++;
-  (todo "finish this function")
+(defmacro reset-stack (stack-location)
+  `(setf (fill-pointer ,stack-location) 0)
   )
+
+(declaim (ftype (function (ctx) nil) begin))
+(defun begin (ctx)
+  (expect (ctx-text-width ctx))
+  (expect (ctx-text-height ctx))
+  (reset-stack (ctx-command-list ctx))
+  (reset-stack (ctx-root-list ctx))
+  (setf (ctx-scroll-target ctx) nil)
+  (setf (ctx-hover-root ctx) (ctx-next-hover-root ctx))
+  (setf (ctx-hover-root ctx) nil)
+  (symbol-macrolet
+      ((x (vec2-x (ctx-mouse-pos ctx)))
+       (y (vec2-y (ctx-mouse-pos ctx)))
+       (lx (vec2-x (ctx-last-mouse-pos ctx)))
+       (ly (vec2-y (ctx-last-mouse-pos ctx)))
+       (dx (vec2-x (ctx-mouse-delta ctx)))
+       (dy (vec2-y (ctx-mouse-delta ctx)))
+       )
+    (setf dx (- x lx))
+    (setf dy (- y ly))
+    (incf (ctx-frame ctx))
+    )
+  )
+
+(defmacro assert-stack-empty (stack-location)
+  "Asserts that the fill pointer of a stack is empty"
+  `(assert (= 0 (fill-pointer ,stack-location)))
+  )
+
+(defun not-nil (obj)
+  "returns true when an object is not nil"
+  (not (null obj))
+  )
+(defun =0 (obj)
+  "returns true when an object is equal to 0"
+  (= 0 obj))
+
+(declaim (ftype (function (container container) boolean)))
+(defun container-compare-zindexp (a b)
+  "compares two containers based on their zindex, used for sort"
+  (< (container-zindex a) (container-zindex b))
+  )
+
+(declaim (ftype (function (ctx) nil) end))
+(defun end (ctx)
+  (assert-stack-empty (ctx-container-stack ctx))
+  (assert-stack-empty (ctx-clip-stack ctx))
+  (assert-stack-empty (ctx-id-stack ctx))
+  (assert-stack-empty (ctx-layout-stack ctx))
+
+  (when (not-nil (ctx-scroll-target ctx))
+    (setf
+     (vec2-x (ctx-scroll-target ctx))
+     (vec2-x (ctx-scroll-delta ctx))
+     )
+    (setf
+     (vec2-y (ctx-scroll-target ctx))
+     (vec2-y (ctx-scroll-delta ctx))
+     )
+    )
+  (when (=0 (ctx-updated-focus ctx))
+    (setf (ctx-focus ctx) 0)
+    )
+  (setf (ctx-updated-focus ctx) 0)
+  (when (and
+         (ctx-mouse-pressed ctx)
+         (ctx-next-hover-root ctx)
+         (< (container-zindex (ctx-next-hover-root ctx))
+            (ctx-last-zindex ctx))
+         (>= 0 (container-zindex (ctx-next-hover-root ctx)))
+         )
+    (bring-to-front ctx (ctx-next-hover-root ctx))
+    )
+
+  ;; reset input state
+  (setf (ctx-key-pressed ctx) 0)
+  (reset-stack (ctx-input-text ctx))
+  (setf (ctx-mouse-pressed ctx) 0)
+  (setf (ctx-scroll-delta ctx) (make-vec2))
+  (setf (ctx-last-mouse-pos ctx) (ctx-mouse-pos ctx))
+
+  ;; sort root containers by zindex
+  (setf (ctx-root-list ctx)
+        (sort (ctx-root-list ctx) #'container-compare-zindexp))
+
+  ;; TODO figure out what this is and what it does
+  ;/* set root container jump commands */
+  ;for (i = 0; i < n; i++) {
+  ;  mu_Container *cnt = ctx->root_list.items[i];
+  ;  /* if this is the first container then make the first command jump to it.
+  ;  ** otherwise set the previous container's tail to jump to this one */
+  ;  if (i == 0) {
+  ;    mu_Command *cmd = (mu_Command*) ctx->command_list.items;
+  ;    cmd->jump.dst = (char*) cnt->head + sizeof(mu_JumpCommand);
+  ;  } else {
+  ;    mu_Container *prev = ctx->root_list.items[i - 1];
+  ;    prev->tail->jump.dst = (char*) cnt->head + sizeof(mu_JumpCommand);
+  ;  }
+  ;  /* make the last container's tail jump to the end of command list */
+  ;  if (i == n - 1) {
+  ;    cnt->tail->jump.dst = ctx->command_list.items + ctx->command_list.idx;
+  ;  }
+                                        ;}
+  )
+
+(declaim (ftype (function (ctx id) nil) set-focus))
+(defun set-focus (ctx id)
+  (setf (ctx-focus ctx) id)
+  (setf (ctx-updated-focus ctx) 1)
+  )
+
+(defconstant +hash-initial+ 2166136261)
+; TODO implement this
+;static void hash(mu_Id *hash, const void *data, int size) {
+;  const unsigned char *p = data;
+;  while (size--) {
+;    *hash = (*hash ^ *p++) * 16777619;
+;  }
+;}
+
+; TODO implement this
+;mu_Id mu_get_id(mu_Context *ctx, const void *data, int size) {
+;  int idx = ctx->id_stack.idx;
+;  mu_Id res = (idx > 0) ? ctx->id_stack.items[idx - 1] : HASH_INITIAL;
+;  hash(&res, data, size);
+;  ctx->last_id = res;
+;  return res;
+;}
+
+(defun check-clip (ctx rect)
+  (
+
+                              
+
+    
+  
+
 
