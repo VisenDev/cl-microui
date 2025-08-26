@@ -1,4 +1,3 @@
-
 (define-condition todo (error)
   ((msg :initarg :msg :type string :reader todo-msg))
   (:report (lambda (condition stream)
@@ -16,23 +15,7 @@
     )
   )
 
-(defmacro defenum (name fields)
-  (assert (not (find 'count fields)) (name) "Cannot use count as an enum field name in enum ~a" name)
-  (setq fields (append fields '(count)))
-  (loop
-    :for field in fields    
-    :for i from 0
-    :for fieldname = (symbol-concat '+ name '- field '+)
-    :collect `(defparameter ,fieldname (the fixnum ,i)) into result
-    :finally
-       (progn
-         (push `(deftype ,name () 'fixnum) result)
-         (return `(progn ,@result))
-         )
-    )
-  )
-
-;;;; ========== UTILS ============
+;;;; ========== VECTOR ============
 
 (defun make-vector (type)
   (make-array 8 :adjustable t :fill-pointer 0 :element-type type)
@@ -125,7 +108,6 @@
   )
 (deftype command ()
   '(or
-    base-command
     jump-command
     clip-command
     rect-command
@@ -166,35 +148,6 @@
   (colors (make-color-theme) :type color-theme)
   )
 
-;;;; =========== CORE IMPLEMENTATION =============
-
-(declaim (ftype (function (ctx rect color-id) nil) draw-frame))
-(defun draw-frame (ctx rect color-id)
-  (let*
-      ((style (ctx-style ctx))
-       (colors (style-colors style))
-       (color (funcall (symbol-function color-id) colors))
-       )
-  (draw-rect ctx rect color)
-    (when
-        (member
-         color-id
-         '(color-theme-scroll-base
-           color-theme-scroll-thumb
-           color-theme-title-bg)
-         )
-      (return-from draw-frame)
-      )
-    (let* ((border (color-theme-border colors))
-          (a (color-a border))
-          )
-      (unless (= 0 a)
-        (draw-box ctx (expand-rect rect 1) border)
-        )
-      )
-    )
-  )
-
 ;;;; ========== STACK ==========
 (defconstant +default-stack-size+ 64)
 (deftype stack (type) `(vector ,type ,+default-stack-size+))
@@ -214,11 +167,11 @@
 
 ;;;; ========== CTX ===========
 (defstruct ctx
-  (text-width no-default
+  (text-width nil
    :type (function (font string fixnum) fixnum))
-  (text-height no-default
+  (text-height nil
    :type (function (font) fixnum))
-  (draw-frame #'draw-frame
+  (draw-frame nil
    :type (function (ctx rect symbol) nil))
   (style (make-style) :type style)
   (hover 0 :type id)
@@ -252,13 +205,12 @@
   (last-mouse-pos (make-vec2) :type vec2)
   (mouse-delta (make-vec2) :type vec2)
   (scroll-delta (make-vec2) :type vec2)
-  (mouse-down)
-  (mouse-pressed)
-  (key-down)
-  (key-pressed)
-  (input-text)
+  (mouse-down nil :type boolean)
+  (mouse-pressed nil)
+  (key-down nil)
+  (key-pressed nil)
+  (input-text nil)
   )
-
 
 
 ;;;; ============ RECT UTILS =============
@@ -321,13 +273,38 @@
   )
 
 
+;;;; ================= FORWARD DECLARATIONS ==============
+(declaim (ftype (function (ctx rect color) nil) draw-rect))
+(declaim (ftype (function (ctx rect color) nil) draw-box))
+
+;;;; ================= CORE IMPLEMENTATION ===============
+(declaim (ftype (function (ctx rect keyword) nil) draw-frame))
+(defun draw-frame (ctx rect color-id)
+  (let*
+      ((style (ctx-style ctx))
+       (colors (style-colors style))
+       (color (funcall (symbol-function color-id) colors))
+       )
+    (draw-rect ctx rect color)
+    (unless (member color-id '(:scroll-base :scroll-thumb :title-bg))
+      (let* ((border (color-theme-border colors))
+             (a (color-a border))
+             )
+        (unless (= 0 a)
+          (draw-box ctx (expand-rect rect 1) border)
+          )
+        )
+      )
+    )
+  )
+
 
 (declaim (ftype (function (ctx) nil) begin))
 (defun begin (ctx)
-  (expect (ctx-text-width ctx))
-  (expect (ctx-text-height ctx))
-  (reset-stack (ctx-command-list ctx))
-  (reset-stack (ctx-root-list ctx))
+  (assert (ctx-text-width ctx))
+  (assert (ctx-text-height ctx))
+  (stack-reset (ctx-command-list ctx))
+  (stack-reset (ctx-root-list ctx))
   (setf (ctx-scroll-target ctx) nil)
   (setf (ctx-hover-root ctx) (ctx-next-hover-root ctx))
   (setf (ctx-hover-root ctx) nil)
@@ -399,6 +376,12 @@
   (setf (ctx-root-list ctx)
         (sort (ctx-root-list ctx) #'container-compare-zindexp))
 
+  (loop
+    :for i :from 0 :below (fill-pointer (ctx-root-list ctx))
+    :for cnt = (aref (ctx-root-list ctx) i)
+    :when (= i 0)
+      :for cmd = (ctx-command-list ctx)
+      :do (setf (jump-command-dst cmd) 
   ;; TODO figure out what this is and what it does
   ;/* set root container jump commands */
   ;for (i = 0; i < n; i++) {
